@@ -1,4 +1,4 @@
-#!/usr/local/bin/python
+#!/usr/bin/python
 
 """
 get device name + ro.product.manufacturer, ro.product.brand
@@ -15,12 +15,12 @@ delete file on sdcard
 
 import re
 import datetime
-import os
 import subprocess
-import sys
 import time
+import os
+import sys
 
-destination = '~/Downloads'
+destination = os.path.join(os.path.expanduser('~'), 'Documents/android_videos')
 
 
 def execute_shell(command, working_directory=None, stdout=None, stderr=None):
@@ -35,46 +35,73 @@ def execute_shell(command, working_directory=None, stdout=None, stderr=None):
         p.wait()
 
 
-# Get device name: adb shell getprop ro.product.model
-device_name = execute_shell('adb shell getprop ro.product.model', stdout=subprocess.PIPE).replace(" ", "-").strip()
-if device_name == '':
-    print("Please check that device is connected and restart the script")
-    sys.exit(0)
+def get_device_data():
+    device_data, error_data = execute_shell(
+        'adb shell getprop | egrep "ro.product.model|ro.build.version.release"',
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    if error_data:
+        print(error_data)
+        sys.exit(0)
+    device_name_pattern = '\[ro.product.model\]: \[(.*)\]'
+    os_version_pattern = '\[ro.build.version.release\]: \[(.*)\]'
+    device_name = re.search(device_name_pattern, device_data).group(1).replace(' ', '-').strip()
+    print(device_name)
+    os_version = re.search(os_version_pattern, device_data).group(1).replace(' ', '-').replace('.', '-').strip()
+    print(os_version)
 
-device_version = execute_shell('adb shell getprop ro.build.version.release', stdout=subprocess.PIPE)\
-    .replace(" ", "-").replace(".", "-").strip()
+    return device_name, os_version
 
-device_info = device_name + "_" + device_version
 
-# Get current activity and grab package name from it: adb shell dumpsys window windows | grep -E 'mCurrentFocus'
-activity_info = execute_shell("adb shell dumpsys window windows | grep -E 'mCurrentFocus'", stdout=subprocess.PIPE)
+def get_app_name():
+    activity_info = execute_shell('adb shell dumpsys window windows | grep "mCurrentFocus"', stdout=subprocess.PIPE)
+    activity_info = activity_info.rstrip().lstrip()
+    try:
+        name_pattern = 'u\d (.*?)/.*\.(.*?)}$'
+        app_name = re.search(name_pattern, activity_info).group(1).strip().replace('.', '-').replace(' ', '-')
+        print(app_name)
 
-try:
-    pattern = 'u0 (.*)\/.*\.(.*)}'
-    app_name = re.search(pattern, activity_info).group(1).strip().replace(".", "-").replace(" ", "-")
+    except AttributeError:
+        app_name = ''
 
-except Exception:
-    app_name = ""
+    return app_name
 
-# Get current time
-now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-# Combine data in one string to use as screenshot name
-screen_name = device_info + "_" + app_name + "_" + now + ".mp4"
+def main():
+    # Get device name: adb shell getprop ro.product.model
+    device_name, os_version = get_device_data()
 
-# Start screen record
+    # Get current activity and grab package name from it: adb shell dumpsys window windows | grep 'mCurrentFocus'
+    app_name = get_app_name()
 
-print("")
-print("Press ctrl+c to stop recording")
-print("")
+    # Get current time
+    now = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 
-cmdstring = "adb shell screenrecord --verbose /sdcard/%s" % screen_name
-os.system(cmdstring)
+    # Combine data in one string to use as screenshot name
+    screen_name = '{}_{}_{}_{}.mp4'.format(device_name, os_version, app_name, now)
 
-# My guess is that interrupting video recording doesn't give system enough time to save file correctly
-# without sleep it is corrupted
-time.sleep(3)
+    print(screen_name)
 
-execute_shell("adb pull /sdcard/%s %s" % (screen_name, destination))
+    if not os.path.exists(destination):
+        print('Folder for videos doesn\'t exist. Creating...')
+        os.makedirs(destination)
 
-execute_shell("adb shell rm /sdcard/%s" % screen_name)
+    # Start screen record
+    p = subprocess.Popen('adb shell screenrecord --verbose /sdcard/{}'.format(screen_name), shell=True)
+    try:
+        p.wait()
+    except KeyboardInterrupt:
+        p.kill()
+
+    # My guess is that interrupting video recording doesn't give system enough time to save file correctly
+    # - without sleep it is corrupted
+    time.sleep(3)
+
+    execute_shell('adb pull /sdcard/{} {}'.format(screen_name, destination))
+
+    execute_shell('adb shell rm /sdcard/{}'.format(screen_name))
+
+
+if __name__ == main():
+    main()
